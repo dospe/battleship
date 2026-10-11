@@ -28,6 +28,13 @@
   <meta name="twitter:site" content="@jhackatoa" />
   <link rel="canonical" href="https://battleship.hackatoa.com/th/" />  <meta name="application-name" content="Hackatoa Games" />
   <meta name="robots" content="index, follow" />  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <!-- pwa:start -->
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <meta name="theme-color" content="#0a1628" />
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-title" content="Lodě" />
+  <script src="/pwa.js" defer></script>
+  <!-- pwa:end -->
   <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -326,7 +333,6 @@ window.t = function(k, p){ var d = window.__I18N__ || {}; var s = String(k).spli
 </script>
 <!-- i18n:runtime:end -->
   <script src="/game.js"></script>
-<!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fb943269b344332804cfc907bf18ee5"}'></script><!-- End Cloudflare Web Analytics -->
 <script>
 /* ── THE VOLCANO PROTOCOL — Seal V (final) ── */
 ;(function(){try{
