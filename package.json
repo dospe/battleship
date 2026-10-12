@@ -1,17 +1,13 @@
 {
   "name": "battleship",
-  "version": "1.0.0",
+  "version": "2.0.0",
+  "description": "Lodě – klasická námořní bitva v prohlížeči (proti počítači nebo dva hráči přes místnost).",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "i18n:translate": "node scripts/i18n-translate.mjs",
-    "i18n:build": "node scripts/i18n-build.mjs"
+    "start": "node server.js"
   },
   "dependencies": {
-    "@hackatoan/leaderboard": "https://github.com/Hackatoan/game-leaderboard/archive/refs/tags/v1.0.0.tar.gz",
     "express": "^4.18.2",
-    "jose": "^6.2.12",
-    "pg": "^8.23.0",
     "socket.io": "^4.7.2"
   }
 }

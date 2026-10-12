@@ -1,7 +1,7 @@
-/* Hackatoa games — tiny synthesized sound effects (WebAudio, no asset files).
+/* Tiny synthesized sound effects (WebAudio, no asset files).
  * window.SFX.play('click' | 'place' | 'place2' | 'turn' | 'join' | 'win' | 'lose' | 'draw'
  *   | 'hit' | 'miss' | 'sunk' | 'flip' | 'pop' | 'reveal' | 'flag' | 'boom' | 'error' | 'tick')
- * Mute is shared across every game on the same origin via localStorage 'sfxMuted'.
+ * Mute is remembered via localStorage 'sfxMuted'.
  * Fail-soft: if WebAudio or storage is unavailable, everything silently no-ops. */
 (function () {
   if (window.SFX) return;
@@ -113,7 +113,7 @@
     if (!btn) return;
     btn.textContent = muted ? '🔇' : '🔊';
     btn.setAttribute('aria-pressed', muted ? 'true' : 'false');
-    btn.setAttribute('aria-label', muted ? 'Unmute sound effects' : 'Mute sound effects');
+    btn.setAttribute('aria-label', muted ? 'Zapnout zvuky' : 'Vypnout zvuky');
     btn.title = btn.getAttribute('aria-label');
   }
   function setMuted(m) {
@@ -122,8 +122,8 @@
     paint();
     if (!muted) play('click');
   }
-  // Controls live in an in-flow utility bar (#site-utils) instead of floating over the page.
-  // A page can provide its own #site-utils to place the bar inside its existing HUD/header.
+  // The button goes into the page's #site-utils bar (index.html provides it, styled in style.css);
+  // a default in-flow bar is created only if the page has none.
   function bar() {
     var b = document.getElementById('site-utils');
     if (b) return b;
@@ -143,20 +143,8 @@
     btn = document.createElement('button');
     btn.type = 'button';
     btn.id = 'sfx-toggle';
-    btn.style.cssText = 'width:34px;height:34px;border-radius:50%;flex:none;order:1;' +
-      'border:1px solid rgba(255,255,255,.25);background:rgba(20,20,28,.85);color:#fff;font-size:16px;line-height:1;' +
-      'cursor:pointer;padding:0;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.4);';
     btn.addEventListener('click', function () { setMuted(!muted); });
     host.appendChild(btn);
-    var lang = document.getElementById('lang-switch');
-    if (lang) {
-      lang.style.position = 'relative';
-      lang.style.top = lang.style.right = 'auto';
-      lang.style.order = '2';
-      lang.style.padding = '0';
-      lang.style.display = 'block';
-      host.appendChild(lang);
-    }
     paint();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount);

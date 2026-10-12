@@ -2,15 +2,13 @@
 //  - pages: network first, cache as fallback (fresh HTML whenever online)
 //  - static files: stale-while-revalidate (instant, refreshed in background)
 //  - /socket.io/ traffic and /api/ are never cached
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = 'lode-' + VERSION;
 const PRECACHE = [
   '/',
   '/style.css',
   '/game.js',
   '/sfx.js',
-  '/name.js',
-  '/account.js',
   '/pwa.js',
   '/socket.io/socket.io.js',
   '/favicon.svg',

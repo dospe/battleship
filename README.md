@@ -1,42 +1,32 @@
-# Battleship
+# Lodě
 
-Multiplayer Battleship you can play online against a friend or an AI opponent.
+Klasické lodě v prohlížeči: solo proti počítači (tři obtížnosti), nebo dva
+hráči v reálném čase přes sdílený odkaz na místnost. Bez účtů, bez reklam,
+instalovatelné jako aplikace (PWA); hra proti počítači funguje i offline.
 
-🔗 **Live:** [battleship.hackatoa.com](https://battleship.hackatoa.com)   ·   ☕ **Support:** [Buy Me a Coffee](https://buymeacoffee.com/hackatoa)
+Fork projektu [Hackatoan/battleship](https://github.com/Hackatoan/battleship)
+(Node.js + Express + Socket.io). Oproti původní hře:
 
-## Overview
+- české rozhraní, bez patičky, odkazů, SEO textu a žebříčku,
+- tmavý („Námořní“) a světlý („Papír“) vzhled s přepínačem vpravo nahoře,
+- kódy polí (A1 … J10) na pozadí každého pole,
+- potopené lodě zobrazené vlastní barvou (na obou deskách, i ve hře dvou hráčů),
+- PWA (manifest, service worker, ikony), bez analytiky a Google přihlášení.
 
-Classic Battleship in the browser. Play real-time multiplayer over WebSockets or take on an AI with three difficulty levels (random, hunt & target, probability-based). Includes a global leaderboard.
-
-## Features
-
-- Real-time online multiplayer + single-player vs AI (Easy / Medium / Hard)
-- Drag-free ship placement with keyboard `R` and touch double-tap to rotate
-- Global leaderboard (Postgres)
-- 6-language localization
-
-## Tech Stack
-
-HTML · vanilla JS · Node.js (Express + Socket.IO) · PostgreSQL · Docker
-
-## Development
+## Vývoj
 
 ```bash
 npm install
-npm start   # serves public/ + Socket.IO on PORT (default 3025)
+npm start   # servíruje public/ + Socket.io na PORT (výchozí 3025)
 ```
-The leaderboard is optional — without `DATABASE_URL` set, the game runs with the leaderboard disabled.
 
-## Deployment
+Žádná databáze ani proměnné prostředí nejsou potřeba. Stav partií drží server
+jen v paměti.
 
-Docker on the homelab games host; auto-deployed via GHCR + Watchtower.
+## Nasazení
 
-## Support
+Image staví GitHub Actions do `ghcr.io/dospe/battleship` při pushi do `main`.
+Nasazení na VPS popisuje repozitář [dospe/lode](https://github.com/dospe/lode).
 
-If this project is useful to you, consider supporting development:
-
-☕ **[Buy Me a Coffee](https://buymeacoffee.com/hackatoa)**
-
----
-
-Part of the **[Hackatoa](https://hackatoa.com)** ecosystem — self-hosted apps, browser games, and bots. · [All repositories »](https://github.com/Hackatoan)
+Při změně seznamu souborů v `PRECACHE` v `public/sw.js` zvyš i `VERSION`,
+aby si nainstalovaná aplikace stáhla novou verzi.

@@ -1,43 +1,49 @@
 const socket = io();
 
-if (window.PlayerAccount) window.PlayerAccount.mountWidget('#hk-account');
-
-// Best-effort idToken for a signed-in player, for actions the user triggers
-// directly (create/join room) — by the time someone clicks, Firebase's
-// persisted-session check has essentially always already resolved.
-async function getIdToken() {
-  return window.PlayerAccount ? await window.PlayerAccount.getIdToken() : null;
-}
-
-// Same, but bounded and used only for the auto-join-from-URL path below,
-// which fires on page load before Firebase's persisted-session check is
-// guaranteed to have resolved yet -- wait briefly for the first auth
-// callback so a returning signed-in player's very first join carries their
-// idToken instead of joining anonymously and only linking on their next game.
-async function getInitialIdToken() {
-  if (!window.PlayerAccount) return null;
-  return Promise.race([
-    new Promise((resolve) => {
-      const unsub = window.PlayerAccount.onAuthChange(async (user) => {
-        unsub();
-        resolve(user ? await window.PlayerAccount.getIdToken() : null);
-      });
-    }),
-    new Promise((resolve) => setTimeout(() => resolve(null), 1500)),
-  ]);
-}
-
-// ── Constants ────────────────────────────────────────────────────────────────
+// ── Konstanty ────────────────────────────────────────────────────────────────
+// `acc` = 4. pád pro „Potopil jsi …“, `mine` = 4. pád s přivlastněním pro
+// „Soupeř potopil …“ (rod lodi určuje tvar zájmena).
 const SHIPS = [
-  { id: 1, name: 'Carrier',    size: 5 },
-  { id: 2, name: 'Battleship', size: 4 },
-  { id: 3, name: 'Cruiser',    size: 3 },
-  { id: 4, name: 'Submarine',  size: 3 },
-  { id: 5, name: 'Destroyer',  size: 2 },
+  { id: 1, name: 'Letadlová loď', acc: 'letadlovou loď', mine: 'tvou letadlovou loď', size: 5 },
+  { id: 2, name: 'Bitevní loď',   acc: 'bitevní loď',    mine: 'tvou bitevní loď',    size: 4 },
+  { id: 3, name: 'Křižník',       acc: 'křižník',        mine: 'tvůj křižník',        size: 3 },
+  { id: 4, name: 'Ponorka',       acc: 'ponorku',        mine: 'tvou ponorku',        size: 3 },
+  { id: 5, name: 'Torpédoborec',  acc: 'torpédoborec',   mine: 'tvůj torpédoborec',   size: 2 },
 ];
 const COLS = 'ABCDEFGHIJ';
 const DOUBLE_TAP_MS = 350;
+const THEME_KEY = 'lodeTheme';
 let lastShipTap = { shipId: null, at: 0 };
+
+const TXT = {
+  yourTurn: 'Tvůj tah',
+  oppTurn: 'Soupeř na tahu',
+  victory: 'VÍTĚZSTVÍ!',
+  defeat: 'PORÁŽKA',
+  wonSub: 'Potopil jsi všechny nepřátelské lodě!',
+  lostSub: 'Tvoje flotila byla zničena.',
+  copied: 'Zkopírováno!',
+  copyCode: 'Kopírovat kód',
+  copyLink: 'Kopírovat odkaz',
+  joiningRoom: 'Připojuji se do místnosti {code}…',
+  waitingJoin: 'Pošli kód nebo odkaz soupeři a počkej, až se připojí…',
+  oppReady: 'Soupeř je připraven!',
+  oppDisconnected: 'Soupeř se odpojil.',
+  youSunkTheir: 'Potopil jsi {ship}!',
+  theySunkYour: 'Soupeř potopil {ship}!',
+  youHit: 'Zásah {cell}',
+  youMissed: 'Minul jsi {cell}',
+  oppHit: 'Soupeř zasáhl {cell}',
+  oppMissed: 'Soupeř minul {cell}',
+  readyHint: 'Nejdřív rozmísti všechny lodě',
+};
+const T = (k, p) => {
+  let s = TXT[k] || k;
+  if (p) for (const n in p) s = s.split('{' + n + '}').join(p[n]);
+  return s;
+};
+const cellName = (r, c) => COLS[c] + (r + 1);
+const cellsLabel = (n) => n >= 5 ? `${n} polí` : `${n} pole`;
 
 // Cache of cell elements per board id, populated by buildBoard(), so getCell()
 // is an O(1) array lookup instead of a DOM query. Boards are rebuilt (not just
@@ -51,19 +57,20 @@ const boardCellCache = {};
 // per pass over the placement board).
 let previewCells = [];
 
-// ── State ─────────────────────────────────────────────────────────────────────
+// ── Stav ─────────────────────────────────────────────────────────────────────
 let state = {
   mode: null,          // 'single' | 'multi'
   difficulty: 'medium',
   roomCode: null,
-  myBoard: null,       // 10x10, cell = 0|shipId
-  oppHits: null,       // 10x10 bool — cells I've attacked on opp board
-  myHits: null,        // 10x10 bool — cells opp has attacked on my board
+  myBoard: null,       // 10x10, cell = 0|shipId (pracovní; při hře proti AI se zásahy nulují)
+  myLayout: null,      // 10x10, nedotčená kopie rozmístění pro vykreslení potopených lodí
+  oppHits: null,       // 10x10 false|'hit'|'miss'|'sunk' — moje výstřely na soupeřovu desku
+  myHits: null,        // 10x10 false|'hit'|'miss' — soupeřovy výstřely na moji desku
   myTurn: false,
-  shipCounts: { my: {}, opp: {} },
+  sunk: { my: new Set(), opp: new Set() },
   gameOver: false,
 
-  // placement
+  // rozmístění
   placedShips: new Set(),
   selectedShip: null,
   horizontal: true,
@@ -71,6 +78,7 @@ let state = {
 
   // AI
   aiBoard: null,
+  aiLayout: null,
   aiHits: null,
   aiQueue: [],
   aiLastHit: null,
@@ -79,14 +87,43 @@ let state = {
   aiProbGrid: null,
 };
 
-// ── Screens ───────────────────────────────────────────────────────────────────
+// ── Vzhled (tmavý / světlý) ───────────────────────────────────────────────────
+// Výchozí režim nastavuje inline skript v <head> (uložená volba, jinak systém).
+function currentTheme() {
+  return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+}
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  try { localStorage.setItem(THEME_KEY, theme); } catch (e) {}
+  const meta = document.getElementById('theme-color');
+  if (meta) meta.content = theme === 'light' ? '#f4efe4' : '#0a1628';
+  paintThemeButton();
+}
+
+function toggleTheme() {
+  if (window.SFX) SFX.play('click');
+  applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+}
+
+// Ikona ukazuje režim, na který se přepne.
+function paintThemeButton() {
+  const btn = document.getElementById('theme-toggle');
+  if (!btn) return;
+  const dark = currentTheme() === 'dark';
+  btn.textContent = dark ? '☀️' : '🌙';
+  btn.setAttribute('aria-label', dark ? 'Přepnout na světlý vzhled' : 'Přepnout na tmavý vzhled');
+  btn.title = btn.getAttribute('aria-label');
+}
+
+// ── Obrazovky ─────────────────────────────────────────────────────────────────
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
   if (id === 'screen-menu') history.replaceState(null, '', '/');
 }
 
-// ── URL room sharing ──────────────────────────────────────────────────────────
+// ── Sdílení místnosti odkazem ─────────────────────────────────────────────────
 function setRoomInUrl(code) {
   history.replaceState(null, '', `/?room=${code}`);
 }
@@ -99,11 +136,7 @@ function copyLink() {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-  // Prefill nickname field from storage.
-  const nameInput = document.getElementById('name-input');
-  if (nameInput) nameInput.value = window.PlayerName.get();
-
-  loadLeaderboard();
+  paintThemeButton();
 
   const params = new URLSearchParams(window.location.search);
   const room = params.get('room');
@@ -111,36 +144,11 @@ window.addEventListener('DOMContentLoaded', () => {
     showScreen('screen-mp-menu');
     document.getElementById('room-input').value = room.toUpperCase();
     document.getElementById('mp-status').textContent = T('joiningRoom', { code: room.toUpperCase() });
-    getInitialIdToken().then((idToken) => {
-      socket.emit('join_room', { code: room.toUpperCase(), name: currentName(), idToken });
-    });
+    socket.emit('join_room', { code: room.toUpperCase() });
   }
 });
 
-// Read the nickname field (or storage), persist it, and return it.
-function currentName() {
-  const el = document.getElementById('name-input');
-  const n = window.PlayerName.set(el ? el.value : window.PlayerName.get());
-  return n;
-}
-
-async function loadLeaderboard() {
-  const body = document.getElementById('lb-body');
-  if (!body) return;
-  try {
-    const res = await fetch('/api/leaderboard');
-    const data = await res.json();
-    const players = (data && data.players) || [];
-    if (!players.length) { body.innerHTML = '<tr><td colspan="5">No games played yet — be the first!</td></tr>'; return; }
-    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    const me = window.PlayerName.get();
-    body.innerHTML = players.map((p, i) =>
-      `<tr class="${me && p.player === me ? 'lb-me' : ''}"><td>${i + 1}</td><td>${esc(p.player)}</td><td>${p.wins}</td><td>${p.losses}</td><td>${p.draws}</td></tr>`
-    ).join('');
-  } catch { body.innerHTML = '<tr><td colspan="5">Leaderboard unavailable.</td></tr>'; }
-}
-
-// ── Menu actions ──────────────────────────────────────────────────────────────
+// ── Menu ──────────────────────────────────────────────────────────────────────
 function startSinglePlayer() {
   state.mode = 'single';
   showScreen('screen-difficulty');
@@ -152,16 +160,14 @@ function setDifficulty(d) {
   showScreen('screen-placement');
 }
 
-async function createRoom() {
-  const idToken = await getIdToken();
-  socket.emit('create_room', { name: currentName(), idToken });
+function createRoom() {
+  socket.emit('create_room');
 }
 
-async function joinRoom() {
+function joinRoom() {
   const code = document.getElementById('room-input').value.trim().toUpperCase();
   if (!code) return;
-  const idToken = await getIdToken();
-  socket.emit('join_room', { code, name: currentName(), idToken });
+  socket.emit('join_room', { code });
 }
 
 function copyCode() {
@@ -171,7 +177,7 @@ function copyCode() {
   setTimeout(() => btn.textContent = T('copyCode'), 1500);
 }
 
-// ── Socket events ─────────────────────────────────────────────────────────────
+// ── Socket události ───────────────────────────────────────────────────────────
 socket.on('room_created', ({ code }) => {
   state.roomCode = code;
   state.mode = 'multi';
@@ -200,7 +206,8 @@ socket.on('opponent_joined', () => {
 });
 
 socket.on('opponent_ready', () => {
-  document.getElementById('mp-status') && (document.getElementById('mp-status').textContent = T('oppReady'));
+  const el = document.getElementById('mp-status');
+  if (el) el.textContent = T('oppReady');
 });
 
 socket.on('waiting_for_opponent', () => {
@@ -214,19 +221,23 @@ socket.on('game_start', ({ firstTurn }) => {
   showScreen('screen-game');
 });
 
-socket.on('attack_result', ({ attacker, row, col, hit, sunkShip, won, nextTurn }) => {
+socket.on('attack_result', ({ attacker, row, col, hit, sunkShip, sunkCells, won, nextTurn }) => {
   const iMadeAttack = (attacker === socket.id);
   if (iMadeAttack) {
     state.oppHits[row][col] = hit ? 'hit' : 'miss';
-    if (sunkShip) markSunkOnOppBoard(sunkShip);
+    if (sunkShip) {
+      updateShipStatus('opp', sunkShip);
+      markSunkCells(state.oppHits, sunkCells || []);
+    }
     renderOppBoard();
-    logEntry(hit ? T('youHit', { cell: COLS[col] + (row + 1) }) : T('youMissed', { cell: COLS[col] + (row + 1) }), hit ? (sunkShip ? 'sunk' : 'hit') : 'miss');
-    if (sunkShip) { logEntry(T('youSunkTheir', { ship: shipName(sunkShip) }), 'sunk'); updateShipStatus('opp', sunkShip); }
+    logEntry(hit ? T('youHit', { cell: cellName(row, col) }) : T('youMissed', { cell: cellName(row, col) }), hit ? (sunkShip ? 'sunk' : 'hit') : 'miss');
+    if (sunkShip) logEntry(T('youSunkTheir', { ship: shipAcc(sunkShip) }), 'sunk');
   } else {
     state.myHits[row][col] = hit ? 'hit' : 'miss';
+    if (sunkShip) updateShipStatus('my', sunkShip);
     renderMyBoard();
-    logEntry(hit ? T('oppHit', { cell: COLS[col] + (row + 1) }) : T('oppMissed', { cell: COLS[col] + (row + 1) }), hit ? (sunkShip ? 'sunk' : 'hit') : 'miss');
-    if (sunkShip) { logEntry(T('theySunkYour', { ship: shipName(sunkShip) }), 'sunk'); updateShipStatus('my', sunkShip); }
+    logEntry(hit ? T('oppHit', { cell: cellName(row, col) }) : T('oppMissed', { cell: cellName(row, col) }), hit ? (sunkShip ? 'sunk' : 'hit') : 'miss');
+    if (sunkShip) logEntry(T('theySunkYour', { ship: shipMine(sunkShip) }), 'sunk');
   }
   if (won) {
     showResult(iMadeAttack);
@@ -241,9 +252,10 @@ socket.on('opponent_disconnected', () => {
   showScreen('screen-menu');
 });
 
-// ── Placement ─────────────────────────────────────────────────────────────────
+// ── Rozmístění ────────────────────────────────────────────────────────────────
 function initPlacement() {
   state.myBoard = Array.from({ length: 10 }, () => Array(10).fill(0));
+  state.myLayout = null;
   state.placedShips = new Set();
   state.selectedShip = null;
   state.horizontal = true;
@@ -268,7 +280,7 @@ function buildShipList() {
     el.setAttribute('role', 'button');
     el.setAttribute('tabindex', '0');
     el.setAttribute('aria-pressed', 'false');
-    el.setAttribute('aria-label', `${ship.name}, ${ship.size} cells`);
+    el.setAttribute('aria-label', `${ship.name}, ${cellsLabel(ship.size)}`);
     el.onclick = () => selectShip(ship.id);
     el.addEventListener('keydown', e => {
       if (e.key === 'Enter' || e.key === ' ') {
@@ -279,7 +291,7 @@ function buildShipList() {
     el.addEventListener('pointerup', e => handleShipPointerUp(e, ship.id));
     el.innerHTML = `
       <div class="ship-blocks">${'<div class="ship-block"></div>'.repeat(ship.size)}</div>
-      <div><div class="ship-name">${ship.name}</div><div class="ship-len">${ship.size} cells</div></div>`;
+      <div><div class="ship-name">${ship.name}</div><div class="ship-len">${cellsLabel(ship.size)}</div></div>`;
     list.appendChild(el);
   });
 }
@@ -398,7 +410,7 @@ function onPlaceCellClick(r, c) {
 function setReadyEnabled(enabled) {
   const btn = document.getElementById('ready-btn');
   btn.disabled = !enabled;
-  btn.title = enabled ? '' : 'Place all your ships on the grid to enable';
+  btn.title = enabled ? '' : T('readyHint');
 }
 
 function getShipCells(r, c, size, horiz) {
@@ -432,6 +444,8 @@ function randomPlacement() {
   });
   renderPlacementBoard();
   state.selectedShip = null;
+  document.querySelectorAll('.ship-item').forEach(el => el.classList.remove('selected'));
+  updateOrientationIndicator();
   setReadyEnabled(true);
 }
 
@@ -446,6 +460,7 @@ function renderPlacementBoard() {
 
 function confirmPlacement() {
   document.removeEventListener('keydown', handleKey);
+  state.myLayout = state.myBoard.map(row => row.slice());
   if (state.mode === 'single') {
     setupAI();
     state.myTurn = true;
@@ -456,7 +471,7 @@ function confirmPlacement() {
   }
 }
 
-// ── AI Setup ──────────────────────────────────────────────────────────────────
+// ── AI ────────────────────────────────────────────────────────────────────────
 function setupAI() {
   state.aiBoard = Array.from({ length: 10 }, () => Array(10).fill(0));
   state.aiHits = Array.from({ length: 10 }, () => Array(10).fill(false));
@@ -479,6 +494,7 @@ function setupAI() {
     }
     state.aiShipCounts[ship.id] = ship.size;
   });
+  state.aiLayout = state.aiBoard.map(row => row.slice());
 }
 
 function aiAttack() {
@@ -503,8 +519,8 @@ function aiAttack() {
 
     state.myHits[r][c] = hit ? 'hit' : 'miss';
     renderMyBoard();
-    logEntry(hit ? T('oppHit', { cell: COLS[c] + (r + 1) }) : T('oppMissed', { cell: COLS[c] + (r + 1) }), hit ? (sunkShip ? 'sunk' : 'hit') : 'miss');
-    if (sunkShip) logEntry(T('theySunkYour', { ship: shipName(sunkShip) }), 'sunk');
+    logEntry(hit ? T('oppHit', { cell: cellName(r, c) }) : T('oppMissed', { cell: cellName(r, c) }), hit ? (sunkShip ? 'sunk' : 'hit') : 'miss');
+    if (sunkShip) logEntry(T('theySunkYour', { ship: shipMine(sunkShip) }), 'sunk');
 
     const won = !state.myBoard.some(row => row.some(v => v > 0));
     if (won) { showResult(false); return; }
@@ -574,18 +590,19 @@ function probabilistic() {
   return bestCells[Math.floor(Math.random() * bestCells.length)] || randomUnattacked();
 }
 
-// ── Game Init ─────────────────────────────────────────────────────────────────
+// ── Začátek hry ───────────────────────────────────────────────────────────────
 function initGame() {
   state.oppHits = Array.from({ length: 10 }, () => Array(10).fill(false));
   state.myHits = Array.from({ length: 10 }, () => Array(10).fill(false));
+  state.sunk = { my: new Set(), opp: new Set() };
   state.gameOver = false;
+  if (!state.myLayout) state.myLayout = state.myBoard.map(row => row.slice());
 
   buildBoard('my-board', null, null, null, true);
   buildBoard('opp-board', onOppCellClick, null, null, false);
   buildLabels('col-labels-my', 'row-labels-my');
   buildLabels('col-labels-opp', 'row-labels-opp');
 
-  // Init ship status pips
   initShipStatus('my');
   initShipStatus('opp');
 
@@ -595,20 +612,27 @@ function initGame() {
   document.getElementById('game-log').innerHTML = '';
 }
 
+// Stav flotily v záhlaví: jedna „lišta“ dílků na loď, potopená se přebarví.
 function initShipStatus(who) {
   const el = document.getElementById(`${who}-ships`);
   el.innerHTML = '';
   SHIPS.forEach(s => {
-    const pip = document.createElement('div');
-    pip.className = 'ship-pip';
-    pip.id = `pip-${who}-${s.id}`;
-    el.appendChild(pip);
+    const bar = document.createElement('span');
+    bar.className = 'ship-bar';
+    bar.id = `pip-${who}-${s.id}`;
+    bar.title = s.name;
+    bar.innerHTML = '<i></i>'.repeat(s.size);
+    el.appendChild(bar);
   });
 }
 
 function updateShipStatus(who, shipId) {
-  const pip = document.getElementById(`pip-${who}-${shipId}`);
-  if (pip) pip.classList.add('sunk');
+  state.sunk[who].add(shipId);
+  const bar = document.getElementById(`pip-${who}-${shipId}`);
+  if (bar) {
+    bar.classList.add('sunk');
+    bar.title = `${shipName(shipId)} – potopena`;
+  }
 }
 
 function updateTurnDisplay() {
@@ -653,10 +677,13 @@ function onOppCellClick(r, c) {
       if (!board.some(row => row.some(v => v === cellVal))) sunkShip = cellVal;
     }
     state.oppHits[r][c] = hit ? 'hit' : 'miss';
-    if (sunkShip) updateShipStatus('opp', sunkShip);
+    if (sunkShip) {
+      updateShipStatus('opp', sunkShip);
+      markSunkCells(state.oppHits, shipCells(state.aiLayout, sunkShip));
+    }
     renderOppBoard();
-    logEntry(hit ? T('youHit', { cell: COLS[c] + (r + 1) }) : T('youMissed', { cell: COLS[c] + (r + 1) }), hit ? (sunkShip ? 'sunk' : 'hit') : 'miss');
-    if (sunkShip) logEntry(T('youSunkTheir', { ship: shipName(sunkShip) }), 'sunk');
+    logEntry(hit ? T('youHit', { cell: cellName(r, c) }) : T('youMissed', { cell: cellName(r, c) }), hit ? (sunkShip ? 'sunk' : 'hit') : 'miss');
+    if (sunkShip) logEntry(T('youSunkTheir', { ship: shipAcc(sunkShip) }), 'sunk');
 
     const won = !board.some(row => row.some(v => v > 0));
     if (won) { showResult(true); return; }
@@ -669,17 +696,17 @@ function onOppCellClick(r, c) {
   }
 }
 
-// ── Render ────────────────────────────────────────────────────────────────────
+// ── Vykreslení ────────────────────────────────────────────────────────────────
 function renderMyBoard() {
   for (let r = 0; r < 10; r++) {
     for (let c = 0; c < 10; c++) {
       const cell = getCell('my-board', r, c);
       cell.className = 'cell no-hover';
       const hit = state.myHits[r][c];
-      const hasShip = state.myBoard[r][c] > 0;
-      if (hit === 'hit') cell.classList.add(hasShip || true ? 'hit' : 'hit');
+      const shipId = state.myLayout[r][c];
+      if (hit === 'hit') cell.classList.add(shipId > 0 && state.sunk.my.has(shipId) ? 'sunk' : 'hit');
       else if (hit === 'miss') cell.classList.add('miss');
-      else if (hasShip) cell.classList.add('ship');
+      else if (shipId > 0) cell.classList.add('ship');
     }
   }
 }
@@ -700,17 +727,22 @@ function renderOppBoard() {
   }
 }
 
-function markSunkOnOppBoard(shipId) {
-  for (let r = 0; r < 10; r++)
-    for (let c = 0; c < 10; c++)
-      if (state.oppHits[r][c] === 'hit') {
-        // Mark all hit cells as potentially sunk (simple visual)
-      }
-  // For visual, we'd need to track which cells belong to which sunk ship.
-  // This is stored server-side; just update the pip.
+// Pole potopené lodi (seznam [r, c]) přepne na stav 'sunk'.
+function markSunkCells(hits, cells) {
+  cells.forEach(([r, c]) => {
+    if (Number.isInteger(r) && Number.isInteger(c) && hits[r] && c >= 0 && c < 10) hits[r][c] = 'sunk';
+  });
 }
 
-// ── Board Builder ─────────────────────────────────────────────────────────────
+function shipCells(layout, shipId) {
+  const cells = [];
+  for (let r = 0; r < 10; r++)
+    for (let c = 0; c < 10; c++)
+      if (layout[r][c] === shipId) cells.push([r, c]);
+  return cells;
+}
+
+// ── Stavba desky ──────────────────────────────────────────────────────────────
 function buildBoard(id, onClick, onHover, onLeave, noClick) {
   const board = document.getElementById(id);
   board.innerHTML = '';
@@ -722,6 +754,7 @@ function buildBoard(id, onClick, onHover, onLeave, noClick) {
       cell.className = 'cell';
       cell.dataset.r = r;
       cell.dataset.c = c;
+      cell.dataset.code = cellName(r, c);
       if (onClick) cell.addEventListener('click', () => onClick(r, c));
       if (onHover) cell.addEventListener('mouseenter', () => onHover(r, c));
       if (onLeave) {
@@ -755,7 +788,7 @@ function getCell(boardId, r, c) {
   return boardCellCache[boardId]?.[r]?.[c];
 }
 
-// ── Result ────────────────────────────────────────────────────────────────────
+// ── Výsledek ──────────────────────────────────────────────────────────────────
 function showResult(won) {
   state.gameOver = true;
   if (window.SFX) setTimeout(() => SFX.play(won ? 'win' : 'lose'), 500);
@@ -766,9 +799,7 @@ function showResult(won) {
   turnIndicator.classList.toggle('opponent-turn', !won);
   document.getElementById('result-icon').textContent = won ? '🏆' : '💥';
   document.getElementById('result-title').textContent = resultTitle;
-  document.getElementById('result-sub').textContent = won
-    ? T('wonSub')
-    : T('lostSub');
+  document.getElementById('result-sub').textContent = won ? T('wonSub') : T('lostSub');
   document.getElementById('result-title').style.color = won ? 'var(--accent)' : 'var(--danger)';
   const panel = document.getElementById('result-panel');
   panel.hidden = false;
@@ -789,7 +820,7 @@ function playAgain() {
   }
 }
 
-// ── Log ───────────────────────────────────────────────────────────────────────
+// ── Záznam průběhu ────────────────────────────────────────────────────────────
 function logEntry(msg, cls) {
   if (window.SFX && (cls === 'hit' || cls === 'miss' || cls === 'sunk')) SFX.play(cls);
   const log = document.getElementById('game-log');
@@ -799,6 +830,7 @@ function logEntry(msg, cls) {
   log.prepend(entry);
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function shipName(id) { return (window.t && t('ships.' + id)) || SHIPS.find(s => s.id === id)?.name || 'Ship'; }
-const T = (k, p) => (window.t ? t(k, p) : k);
+// ── Pomocné ───────────────────────────────────────────────────────────────────
+function shipName(id) { return SHIPS.find(s => s.id === id)?.name || 'Loď'; }
+function shipAcc(id) { return SHIPS.find(s => s.id === id)?.acc || 'loď'; }
+function shipMine(id) { return SHIPS.find(s => s.id === id)?.mine || 'tvou loď'; }

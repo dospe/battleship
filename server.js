@@ -2,41 +2,12 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
-const db = require('./db');
-const { verifyFirebaseToken } = require('./verifyFirebaseToken');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
-
-app.get('/privacy', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'privacy.html'));
-});
-
-app.get('/terms', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'terms.html'));
-});
-
-// Leaderboard (nickname-based).
-app.get('/api/leaderboard', async (_req, res) => {
-  const players = await db.getLeaderboard(20);
-  res.json({ game: db.GAME, players });
-});
-
-// Merge a previously-played anonymous nickname's stats into the signed-in
-// account making this request. Rate-limited implicitly by requiring a fresh
-// verified ID token per call (an attacker can't cheaply mint those).
-app.post('/api/claim', async (req, res) => {
-  const decoded = await verifyFirebaseToken(req.body && req.body.idToken);
-  if (!decoded) return res.status(401).json({ error: 'sign in required' });
-  const nickname = db.cleanName(req.body && req.body.nickname);
-  if (!nickname) return res.status(400).json({ error: 'nickname required' });
-  const result = await db.claimNickname(nickname, decoded.uid, decoded.name);
-  res.status(result.ok ? 200 : 409).json(result);
-});
 
 const rooms = {};
 
@@ -87,41 +58,38 @@ function checkWin(board) {
   return true;
 }
 
+// Cells a ship occupies in the untouched copy of a board, so the attacker's
+// client can repaint the whole ship as sunk (its working board has the hit
+// cells zeroed out by then).
+function shipCells(layout, shipId) {
+  const cells = [];
+  for (let r = 0; r < 10; r++)
+    for (let c = 0; c < 10; c++)
+      if (layout[r][c] === shipId) cells.push([r, c]);
+  return cells;
+}
+
 io.on('connection', (socket) => {
-  socket.on('create_room', async (payload = {}) => {
+  socket.on('create_room', () => {
     if (Object.keys(rooms).length >= MAX_ROOMS) {
-      return socket.emit('join_error', 'Server is full — try again shortly');
+      return socket.emit('join_error', 'Server je plný, zkus to za chvíli.');
     }
     const code = makeCode();
-    rooms[code] = { players: [socket.id], names: {}, uids: {}, boards: {}, hits: {}, ready: new Set(), turn: null };
-    rooms[code].names[socket.id] = db.cleanName(payload && payload.name);
+    rooms[code] = { players: [socket.id], boards: {}, layouts: {}, hits: {}, ready: new Set(), turn: null };
     socket.join(code);
     socket.emit('room_created', { code });
-    // Verified asynchronously — the room is already created above so a
-    // slow/failed verification never blocks or breaks creating it, it just
-    // means this round won't be linked to an account.
-    if (payload && payload.idToken) {
-      const decoded = await verifyFirebaseToken(payload.idToken);
-      if (decoded && rooms[code]) rooms[code].uids[socket.id] = decoded.uid;
-    }
   });
 
-  socket.on('join_room', async ({ code, name, idToken } = {}) => {
-    if (typeof code !== 'string' || !code) return socket.emit('join_error', 'Room not found');
+  socket.on('join_room', ({ code } = {}) => {
+    if (typeof code !== 'string' || !code) return socket.emit('join_error', 'Místnost nenalezena.');
     const upperCode = code.toUpperCase();
     const room = rooms[upperCode];
-    if (!room) return socket.emit('join_error', 'Room not found');
-    if (room.players.length >= 2) return socket.emit('join_error', 'Room is full');
+    if (!room) return socket.emit('join_error', 'Místnost nenalezena.');
+    if (room.players.length >= 2) return socket.emit('join_error', 'Místnost je plná.');
     room.players.push(socket.id);
-    room.names[socket.id] = db.cleanName(name);
     socket.join(upperCode);
     socket.emit('room_joined', { code: upperCode });
     io.to(upperCode).emit('opponent_joined');
-    // Verified asynchronously — see comment in create_room above.
-    if (idToken) {
-      const decoded = await verifyFirebaseToken(idToken);
-      if (decoded && rooms[upperCode]) rooms[upperCode].uids[socket.id] = decoded.uid;
-    }
   });
 
   socket.on('ships_placed', ({ code, board } = {}) => {
@@ -129,6 +97,7 @@ io.on('connection', (socket) => {
     if (!room) return;
     if (!isValidBoard(board)) return;
     room.boards[socket.id] = board;
+    room.layouts[socket.id] = board.map(row => row.slice());
     room.hits[socket.id] = Array.from({ length: 10 }, () => Array(10).fill(false));
     room.ready.add(socket.id);
     if (room.ready.size === 2) {
@@ -152,10 +121,14 @@ io.on('connection', (socket) => {
     const cellVal = board[row][col];
     const hit = typeof cellVal === 'number' && cellVal > 0;
     let sunkShip = null;
+    let sunkCells = null;
 
     if (hit) {
       board[row][col] = 0;
-      if (checkSunk(board, cellVal)) sunkShip = cellVal;
+      if (checkSunk(board, cellVal)) {
+        sunkShip = cellVal;
+        sunkCells = shipCells(room.layouts[oppId], cellVal);
+      }
     }
 
     const won = hit && checkWin(board);
@@ -164,14 +137,10 @@ io.on('connection', (socket) => {
 
     io.to(code).emit('attack_result', {
       attacker: socket.id,
-      row, col, hit, sunkShip, won, nextTurn
+      row, col, hit, sunkShip, sunkCells, won, nextTurn
     });
 
-    if (won) {
-      const winnerName = room.names[socket.id];
-      db.recordMatch(room.names[socket.id], room.names[oppId], winnerName, room.uids[socket.id], room.uids[oppId]);
-      delete rooms[code];
-    }
+    if (won) delete rooms[code];
   });
 
   socket.on('disconnect', () => {
@@ -189,4 +158,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3025;
-server.listen(PORT, () => console.log(`Battleship running on port ${PORT}`));
+server.listen(PORT, () => console.log(`Lodě běží na portu ${PORT}`));

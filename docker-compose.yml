@@ -1,20 +1,10 @@
+# Místní spuštění pro vývoj/test: docker compose up --build
+# Ostré nasazení na VPS je v repozitáři dospe/lode (sdílený Caddy, síť "web").
 services:
-  battleship:
-    image: ghcr.io/hackatoan/battleship:latest
-    container_name: battleship
-    restart: unless-stopped
+  game:
+    build: .
+    container_name: lode-dev
     ports:
       - "3025:3025"
     environment:
       - PORT=3025
-      - GAME_ID=battleship
-      - DATABASE_URL=${DATABASE_URL}
-    networks:
-      - default
-      - games-net
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
-
-networks:
-  games-net:
-    external: true
